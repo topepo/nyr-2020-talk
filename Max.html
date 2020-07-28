@@ -65,7 +65,8 @@ One of the most important things was to be able to measure the _error of the mod
 
 ```r
 library(tidymodels)
-library(multilevelmod)
+library(multilevelmod)   # remotes::install_github("tidymodels/multilevelmod")
+
 data(riesby, package = "multilevelmod")
 str(riesby)
 ```
@@ -85,8 +86,8 @@ str(riesby)
 
 # Example model
 
-`$$y_{ij} = (\beta_0 + b_{0i}) + (\beta_1 + b_{1i})x_{\texttt{wk}} + \beta_2x_{\texttt{sex}} + \ldots + \beta_6x_{\texttt{des}} + \epsilon_{ij}$$`
-`\(i\)` = subject, `\(j\)` = time, `\(\beta \sim N(\mu, \Sigma)\)`, `\(b \sim N(0, \sigma_w)\)`, `\(\epsilon_{ij} \sim N(0, \sigma)\)`. 
+`$$y_{ij} = (\beta_0 + b_{0i}) + (\beta_1 + b_{1i})x_{\texttt{week}} + \beta_2x_{\texttt{sex}} + \ldots + \beta_6x_{\texttt{despr}} + \epsilon_{ij}$$`
+`\(i\)` = subject, `\(j\)` = time, `\(\beta \sim N(\mu, \Sigma)\)`, `\(b \sim N(0, \Sigma_w)\)`, `\(\epsilon_{ij} \sim N(0, \sigma)\)`. 
 
 
 With tidymodels, we can declare a model-specific formula apart from the one that is used to make the model frame/model matrix. A recipe can also be used. 
@@ -216,7 +217,7 @@ collect_metrics(loso_riesby)
 # Shrinkage/Partial Pooling
 
 .pull-left[
-Multilevel models are configured to treat the level (e.g. subject, here) as a population. The individual `\(b_{0i}\)` and `\(b_{1i}\)` parameters are functions of their individual estimates and the population estimates ( `\(\beta_0\)` and `\(\beta_1\)` ).  
+Multilevel models are configured to treat the level (e.g. subject, here) as a population. The individual `\(b_{0i}\)` and `\(b_{1i}\)` parameters are functions of their individual estimates and the population estimates ( `\(\hat{\beta}_0\)` and `\(\hat{\beta}_1\)` ).  
 
  * The slopes and intercepts that are used for predicting _in-sample_ subjects are shrunken towards a population mean. 
 
@@ -262,7 +263,7 @@ Since we don't know what the subject-specific slope and intercept should be, mos
 
 * This also means that _all new subjects have the same slopes and intercepts_ for the multilevel parameters. 
 
-`$$\hat{y} = \hat{\beta}_0  + \hat{\beta}_1 + \hat{\beta}_2 + \ldots + \hat{\beta}_6$$`
+`$$\hat{y} = \hat{\beta_0} + \hat{\beta_1}x_{\texttt{week}} + \hat{\beta}_2x_{\texttt{sex}} + \ldots + \hat{\beta}_6x_{\texttt{despr}}$$`
 
 This makes sense but it problematic from a _generalization_ stand-point. 
 ]
