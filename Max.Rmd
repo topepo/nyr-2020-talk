@@ -1,0 +1,425 @@
+---
+title: "Resampling, Repeated Measures Designs, and You"
+author: Max Kuhn <br><br> RStudio PBC <br> max@rstudio.com <br> @topepos
+output:
+  xaringan::moon_reader:
+    css: ["mtheme_max.css", "fonts_mtheme_max.css"]  
+    self_contained: false
+    lib_dir: libs
+    nature:
+      ratio: '16:9'
+      highlightLanguage: R
+      countIncrementalSlides: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r knitr, include = FALSE}
+# devtools::install_github("tidymodels/multilevelmod")
+library(tidymodels)
+library(lme4)
+# library(rstanarm)
+library(patchwork)
+
+library(doMC)
+registerDoMC(cores = 10)
+
+thm <- theme_bw() + 
+  theme(
+    panel.background = element_rect(fill = "transparent", colour = NA), 
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    legend.position = "top",
+    legend.background = element_rect(fill = "transparent", colour = NA),
+    legend.key = element_rect(fill = "transparent", colour = NA)
+  )
+theme_set(thm)
+```
+
+
+# Multilevel models
+
+[Wikipedia](https://en.wikipedia.org/wiki/Multilevel_model): 
+
+> Multilevel models (also known as hierarchical linear models, linear mixed-effect model, mixed models, nested data models, random coefficient, random-effects models, random parameter models, or split-plot designs) are statistical models of parameters that vary at more than one level
+
+
+Usually, these models are used to make inferences that extend to the population (rather than the specific levels/data in the current data). 
+
+I'll focus on linear mixed models (for speed) but the same results occur with a hierarchical Bayesian model (with non-exotic priors). 
+
+Also, I'll mostly use the term `subject` to reflect the general idea of an _independent experimental unit_. 
+
+---
+
+# An application: _in vitro_ estimates of drug clearance
+
+
+.pull-left[
+I used to do a lot of modeling of laboratory data that would be used to predict human clearance of drugs. 
+
+There were hundreds of thousands of linear (and sometimes nonlinear) models for different _compounds_ (the primary level). 
+
+ * The _half-life_ of the drug is a function of the slope estimate. 
+
+One of the most important things was to be able to measure the _error of the model_. 
+
+
+
+]
+
+.pull-right[
+
+```{r half-life, echo = FALSE, out.width = '70%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), warning=FALSE, message=FALSE, fig.width = 4, fig.height = 6}
+
+library(MASS)
+
+sigma <- matrix(c(6, .01, .01, 0.006), 2, 2)
+times <- (1:5) * 10
+
+data_sim <- function(b0 = 20, b1 = .01, sigma = 1.5) {
+  y <- (b0 * exp(-b1 * times)) + rnorm(length(times), mean = 0, sd = sigma)
+  tibble::tibble(x = times, y = y)
+}
+
+set.seed(124)
+coef_vals <- data.frame(MASS::mvrnorm(n = 12, c(15, .1), sigma))
+ex_dat <- 
+  map2_dfr(coef_vals$X1, coef_vals$X2, ~ data_sim(), .id = "sample") %>% 
+  mutate(
+    sample = as.numeric(sample),
+    sample = format(sample)
+  )
+
+ggplot(ex_dat, aes(x = x, y = y)) + 
+  geom_point() + 
+  geom_smooth(method = lm, se = FALSE, col = rgb(0, 0, 1, .2)) + 
+  facet_wrap(~ sample) + 
+  ylab("Drug Concentration") + 
+  xlab("Time (min)")
+```
+]
+
+
+---
+
+# Example data from a clinical study
+
+```{r data}
+library(tidymodels)
+library(multilevelmod)
+data(riesby, package = "multilevelmod")
+str(riesby)
+```
+
+---
+
+# Example model
+
+$$y_{ij} = (\beta_0 + b_{0i}) + (\beta_1 + b_{1i})x_{\texttt{wk}} + \beta_2x_{\texttt{sex}} + \ldots + \beta_6x_{\texttt{des}} + \epsilon_{ij}$$
+$i$ = subject, $j$ = time, $\beta \sim N(\mu, \Sigma)$, $b \sim N(0, \sigma_w)$, $\epsilon_{ij} \sim N(0, \sigma)$. 
+
+
+With tidymodels, we can declare a model-specific formula apart from the one that is used to make the model frame/model matrix. A recipe can also be used. 
+
+```{r lme-mod-fit}
+lme_spec <-
+  linear_reg() %>%
+  set_engine("lmer")  # "stan-glmer" is also an option
+
+lme_wflow <-
+  workflow() %>%
+  add_model(
+    lme_spec,
+    formula = depr_score ~ week + (week | subject) + male + endogenous +
+      imipramine + desipramine
+  ) %>%
+  add_formula(depr_score ~ .)
+
+lme_fit <- fit(lme_wflow, data = riesby)
+```
+
+
+
+---
+
+# Example model
+
+.font80[
+
+```{r lme-mod-sigma}
+lme_fit
+```
+
+]
+
+
+---
+
+# Predictions for the training set 
+
+```{r in-sample-pred, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), warning=FALSE, fig.width = 12, fig.height = 6.75}
+in_sample_pred <- predict(lme_fit, riesby) %>% dplyr::select(.in_sample = .pred)
+
+riesby %>%
+  mutate(.row = row_number()) %>%
+  bind_cols(in_sample_pred) %>%
+  mutate(male = ifelse(male == 1, "yes", "no")) %>% 
+  ggplot(aes(x = week, y = depr_score, col = male)) +
+  geom_point(alpha = .5) +
+  geom_path(aes(y = .in_sample)) +
+  facet_wrap(~ subject) +
+  scale_color_brewer(palette = "Set1") + 
+  theme(legend.position = "right", plot.margin = margin(0, 0, 0, 0, "cm"))
+```
+
+
+---
+
+# Does $\hat{\sigma}$ generalize to new subjects?
+
+As previously mentioned, there are situations were the error estimate ( $\hat{\sigma}$ ) is very important for purposes unrelated to model comparisons (i.e., it is more informative that *IC statistics). 
+
+Our estimate from the model is `r round(sigma(lme_fit$fit$fit$fit), 3)`. 
+
+Would this generalize to new samples? What would happen if we used _leave-one-subject-out cross-validation_? 
+ 
+ * Each subject's data are withheld from the model, predicted, and an individual RMSE is estimated.
+ 
+ * The _overall_ RMSE is the average of the `r length(unique(riesby$subject))` individual estimates. 
+ 
+```{r losocv}
+ctrl <- control_resamples(save_pred = TRUE)
+leave_subject_out <- group_vfold_cv(riesby, group = "subject")
+
+loso_riesby <-
+  lme_wflow %>%
+    fit_resamples(resamples = leave_subject_out, control = ctrl)
+```
+
+---
+
+# WAT
+
+.pull-left[
+
+```{r metrics}
+collect_metrics(loso_riesby)
+```
+
+
+```{r metrics-plot, echo = FALSE, out.width = '100%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), warning=FALSE, fig.width = 5, fig.height = 3}
+collect_metrics(loso_riesby, summarize = FALSE) %>% 
+  dplyr::filter(.metric == "rmse") %>% 
+  ggplot(aes(x = .estimate)) + 
+  geom_line(stat = "density") + 
+  geom_rug() + 
+  xlab("Subject-Specific RMSE estimate") + 
+  geom_vline(xintercept = sigma(lme_fit$fit$fit$fit), col = "red", alpha = .5) + 
+  geom_vline(
+    xintercept = collect_metrics(loso_riesby) %>% filter(.metric == "rmse") %>% pull(mean),
+    col = "blue",
+    alpha = .5
+  )
+``` 
+]
+
+.pull-right[
+```{r pika-pika, echo = FALSE, out.width = '75%', fig.align='center'}
+knitr::include_graphics("images/pika-pika.png")
+```
+
+]
+
+
+---
+
+# Shrinkage/Partial Pooling
+
+.pull-left[
+Multilevel models are configured to treat the level (e.g. subject, here) as a population. The individual $b_{0i}$ and $b_{1i}$ parameters are functions of their individual estimates and the population estimates ( $\beta_0$ and $\beta_1$ ).  
+
+ * The slopes and intercepts that are used for predicting _in-sample_ subjects are shrunken towards a population mean. 
+
+]
+
+.pull-right[
+
+```{r shrinkage-coefs-comps, echo = FALSE, out.width = '100%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), warning=FALSE, fig.width = 5, fig.height = 5}
+# `lm()` doesn't have enough data to support the full model so we'll
+# fit the smaller model using both methods. 
+lme_coefs <-
+  workflow() %>%
+  add_model(
+    lme_spec,
+    formula = depr_score ~ week + (week | subject)
+  ) %>%
+  add_formula(depr_score ~ .) %>% 
+  fit(data = riesby) %>% 
+  pull_workflow_fit() %>% 
+  pluck("fit") %>% 
+  coef() %>% 
+  pluck("subject") %>% 
+  as_tibble(rownames = "subject") %>% 
+  mutate(model = "multilevel")
+
+lm_coefs <- 
+  riesby %>% 
+  group_nest(subject) %>% 
+  mutate(
+    fits = map(data, ~ lm(depr_score ~ week, data = .x)),
+    coefs = map(fits, tidy)
+  ) %>% 
+  dplyr::select(-fits) %>% 
+  unnest(cols = coefs) %>% 
+  dplyr::select(subject, term,estimate) %>% 
+  pivot_wider(id_cols = "subject", names_from = "term", values_from = "estimate") %>% 
+  mutate(model = "individual")
+
+both_coefs <- 
+  bind_rows(lm_coefs, lme_coefs)
+
+x_rng <- extendrange(both_coefs$`(Intercept)`)
+y_rng <- extendrange(both_coefs$week)
+
+p <- 
+  ggplot(both_coefs, aes(x = `(Intercept)`, y = week)) + 
+  geom_point(aes(col = model)) + 
+  geom_path(aes(group = subject), col = "black", alpha = .2, 
+            arrow = arrow(ends = "last", type = "closed",  length = unit(0.05, "inches"))) +
+  scale_color_manual(values = c(individual = rgb(1, 0, 0, .25), multilevel = "black")) +
+  theme(legend.position = c(.15, .2)) + 
+  xlim(x_rng) + 
+  ylim(y_rng)
+
+
+(plot_spacer() + plot_spacer() + p  + plot_spacer()) +
+  plot_layout(ncol = 2, nrow = 2, heights = c(0.2, 1), widths = c(1, 0.2))
+```
+
+]
+
+---
+
+# Distributions of Parameters for in-sample data
+
+.pull-left[
+The subject-specific slopes and intercepts that are used for predicting _in-sample_ data. 
+
+They are shrunken towards a population means (the $\beta$ parameters). 
+
+If the prediction function does not have access to the outcome data, how would a new subject be predicted? 
+
+]
+
+.pull-right[
+
+```{r lm-coefs, echo = FALSE, out.width = '100%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), warning=FALSE, fig.width = 5, fig.height = 5}
+get_mode <- function(x) {
+  dens <- density(x, n = 2^12, adjust = 2)
+  dens$x[which.max(dens$y)]
+}
+
+scat <- 
+  ggplot(lme_coefs, aes(x = `(Intercept)`, y = week)) + 
+  geom_point() + 
+  xlim(x_rng) + 
+  ylim(y_rng)
+
+scat_ref <- 
+  scat + 
+  geom_vline(xintercept = get_mode(lme_coefs$`(Intercept)`), lty = 2, alpha = .5) + 
+  geom_hline(yintercept = get_mode(lme_coefs$week), lty = 2, alpha = .5) 
+
+int_dens <- 
+  ggplot(lme_coefs, aes(x = `(Intercept)`)) + 
+  geom_line(stat = "density", adjust = 2, trim = TRUE) + 
+  geom_rug() +
+  geom_vline(xintercept = get_mode(lme_coefs$`(Intercept)`), lty = 2, alpha = .5) + 
+  xlim(x_rng) +
+  theme_void()
+
+slope_dens <- 
+  ggplot(lme_coefs, aes(x = week)) + 
+  geom_line(stat = "density", adjust = 2, trim = TRUE) + 
+  geom_rug() +
+  coord_flip() + 
+  geom_vline(xintercept = get_mode(lme_coefs$week), lty = 2, alpha = .5) + 
+  xlim(y_rng) +
+  theme_void()
+
+(plot_spacer() + plot_spacer() + scat  + plot_spacer()) + 
+  plot_layout(ncol = 2, nrow = 2, heights = c(0.2, 1), widths = c(1, 0.2)) 
+```
+
+]
+
+---
+
+# Parameters for out-of-sample subjects?
+
+
+.pull-left[
+
+.font90[
+
+Since we don't know what the subject-specific slope and intercept should be, most methods make predictions based on the _most likely_ parameter values. 
+
+* That usually means using the mode or mean of the distribution of the parameters (i.e. the posterior for Bayesian models etc.). 
+
+* This also means that _all new subjects have the same slopes and intercepts_ for the multilevel parameters. 
+
+$$\hat{y} = \hat{\beta}_0  + \hat{\beta}_1 + \hat{\beta}_2 + \ldots + \hat{\beta}_6$$
+
+This makes sense but it problematic from a _generalization_ stand-point. 
+]
+
+]
+
+.pull-right[
+
+```{r lm-coefs-dist, echo = FALSE, out.width = '100%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), warning=FALSE, fig.width = 5, fig.height = 5}
+(int_dens + plot_spacer() + scat_ref  + slope_dens) + 
+  plot_layout(ncol = 2, nrow = 2, heights = c(0.2, 1), widths = c(1, 0.2)) 
+```
+
+]
+
+
+
+
+---
+
+# In-sample and out-of-sample predictions
+
+```{r both-preds, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), warning=FALSE, fig.width = 12, fig.height = 6.75}
+riesby %>%
+  mutate(.row = row_number()) %>%
+  bind_cols(in_sample_pred) %>%
+  dplyr::select(-depr_score) %>%
+  full_join(collect_predictions(loso_riesby), by = ".row") %>%
+  dplyr::rename(.out_sample = .pred) %>% 
+  mutate(male = ifelse(male == 1, "yes", "no")) %>% 
+  ggplot(aes(x = week, y = depr_score, col = male)) +
+  geom_point(alpha = .5) +
+  geom_path(aes(y = .in_sample), lty = 3) +
+  geom_path(aes(y = .out_sample))  +
+  facet_wrap(~ subject) +
+  scale_color_brewer(palette = "Set1") + 
+  theme(legend.position = "right", plot.margin = margin(0, 0, 0, 0, "cm"))
+```
+
+
+---
+
+# Thoughts
+
+This is a good example of how subtle the problem of **information leakage** can affect how we evaluate models. 
+
+ * Any estimation that requires something beyond the predictors for new data will have overly optimistic results. 
+ 
+Recall that one of the strengths of using random effects is the ability to generalized outside of the existing set independent experimental units. We should want the extrapolation error estimate to be reasonable. 
+
+If there are not strong time-dependent covariates, this out-of-sample predictions are likely to be weak for new samples. 
+
+
+Slides and code are at: [`https://github.com/topepo/nyr-2020-talk`](https://github.com/topepo/nyr-2020-talk)
