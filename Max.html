@@ -13,7 +13,7 @@
 class: center, middle, inverse, title-slide
 
 # Resampling, Repeated Measures Designs, and You
-### Max Kuhn <br><br> RStudio PBC <br> <a href="mailto:max@rstudio.com" class="email">max@rstudio.com</a> <br> <span class="citation">@topepos</span>
+### Max Kuhn <br><br> RStudio PBC <br> <a href="mailto:max@rstudio.com" class="email">max@rstudio.com</a> <br> <span class="citation">@topepos</span> <br><br><tt>https://github.com/topepo/nyr-2020-talk</tt>
 
 ---
 
@@ -102,10 +102,9 @@ lme_wflow &lt;-
   workflow() %&gt;%
   add_model(
     lme_spec,
-    formula = depr_score ~ week + (week | subject) + male + endogenous +
-      imipramine + desipramine
+    formula = depr_score ~ week + (week | subject) + male + endogenous + imipramine + desipramine
   ) %&gt;%
-  add_formula(depr_score ~ .)
+  add_formula(depr_score ~ .) # better interface than 👈 coming in https://github.com/tidymodels/workflows/pull/68
 
 lme_fit &lt;- fit(lme_wflow, data = riesby)
 ```
